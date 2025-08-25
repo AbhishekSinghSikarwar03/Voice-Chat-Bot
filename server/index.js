@@ -7,7 +7,7 @@ import { GoogleGenAI, Modality } from "@google/genai";
 
 const PORT = process.env.PORT || 8080;
 const MODEL = process.env.GEMINI_MODEL || "gemini-live-2.5-flash-preview"; // dev
-// Final deploy pe: gemini-2.5-flash-preview-native-audio-dialog
+// Final deploy pe: gemini-2.5-flash-preview-native-audio-dialogue
 const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
 
 const app = express();
@@ -32,9 +32,9 @@ wss.on("connection", async (ws) => {
       model: MODEL,
       config: {
   responseModalities: [Modality.AUDIO],
-  // ✅ Neutral, multi-brand, multilingual assistant
+  // Neutral, multi-brand, multilingual assistant
   systemInstruction:
-    "You are a friendly motorcycle buying assistant for India. " +
+    "You are a friendly motorcycle-buying assistant for India. " +
     "Auto-detect the user's spoken language and reply in the SAME language. " +
     "Supported: English (en), Hindi (hi), Marathi (mr), Gujarati (gu), Bengali (bn), Tamil (ta), Telugu (te). " +
     "Cover ALL brands and models (Hero, Honda, TVS, Yamaha, Bajaj, KTM, Royal Enfield, Suzuki, Aprilia, Jawa, Triumph, Harley-Davidson, Revolt, etc.). " +
@@ -93,7 +93,7 @@ wss.on("connection", async (ws) => {
         await session.sendClientContent({ turns: [], turnComplete: true });
       } else if (msg.type === "interrupt") {
         // Client requested to stop current playback locally; Live API will auto-cancel
-        // on new audio (VAD). Optionally you can just drop audio queue on client side.
+        // on new audio (VAD). Optionally, you can just drop the audio queue on the client side.
       }
     } catch (e) {
       sendToClient({ type: "error", error: String(e) });
