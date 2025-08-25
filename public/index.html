@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Robot Voice — Talk to Me</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700;900&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
+  <!-- external CSS -->
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="stage">
+    <div class="robotWrap">
+      <!-- status -->
+      <div class="chipbar">
+        <div class="chip">
+          <span id="dot" class="dot"></span>
+          <span id="state">DISCONNECTED</span>
+        </div>
+
+        <div class="pill" title="Select language">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3v18M3 12h18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <select id="lang">
+            <option value="auto" selected>Auto (match user)</option>
+            <option value="en">English</option>
+            <option value="hi">Hindi</option>
+            <option value="mr">Marathi</option>
+            <option value="gu">Gujarati</option>
+            <option value="bn">Bengali</option>
+            <option value="ta">Tamil</option>
+            <option value="te">Telugu</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- robot -->
+      <div id="bot" class="bot" aria-label="AI Robot">
+        <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+        <div class="mouth"></div>
+        <div id="centerHint" class="hint">
+          Press <b>Start</b> and speak.<br/>I will reply in your language.
+        </div>
+      </div>
+
+      <!-- tiny transcript -->
+      <div id="line" class="line"></div>
+
+      <!-- controls -->
+      <div class="controls">
+        <button id="start" class="btn start">Start</button>
+        <button id="stop"  class="btn stop">Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JS kept inline (you can move to /app.js later if you want) -->
+  <script type="module">
+    // UI refs
+    const botEl    = document.getElementById('bot');
+    const dot      = document.getElementById('dot');
+    const stateEl  = document.getElementById('state');
+    const lineEl   = document.getElementById('line');
+    const hintC    = document.getElementById('centerHint');
+    const startBtn = document.getElementById('start');
+    const stopBtn  = document.getElementById('stop');
+    const langSel  = document.getElementById('lang');
+
+    // helpers
+    const setState = (txt, mode) => { stateEl.textContent = txt; dot.className = 'dot ' + (mode||''); };
+    const speakUI  = (on) => { botEl.classList.toggle('speaking', !!on); setState(on?'SPEAKING':'LISTENING', on?'speak':'listen'); hintC.style.opacity = on?0:0.9; };
+    const setLine  = (t) => { lineEl.textContent = t || ''; };
+
+    // audio + ws
+    let ws, running=false, audioCtxIn, micStream, workletNode, playbackCtx;
+    let queue=[], playing=false;
+
+    async function initMic(){
+      audioCtxIn = new AudioContext({ sampleRate: 48000 });
+      const code = `
+        class PCM16Sender extends AudioWorkletProcessor{
+          process(inputs){
+            const input=inputs[0][0]; if(!input) return true;
+            const step=Math.round(sampleRate/16000);
+            const out=new Int16Array(Math.floor(input.length/step));
+            for(let i=0,j=0;i<input.length;i+=step,j++){
+              const s=Math.max(-1,Math.min(1,input[i]));
+              out[j]=s<0?s*0x8000:s*0x7FFF;
+            }
+            this.port.postMessage(out.buffer,[out.buffer]); return true;
+          } }
+        registerProcessor('pcm16-sender', PCM16Sender);
+      `;
+      await audioCtxIn.audioWorklet.addModule(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));
+      micStream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+      const src = audioCtxIn.createMediaStreamSource(micStream);
+      workletNode = new AudioWorkletNode(audioCtxIn,'pcm16-sender');
+      workletNode.port.onmessage = (e)=>{
+        if(ws?.readyState===1){
+          const b64=btoa(String.fromCharCode(...new Uint8Array(e.data)));
+          ws.send(JSON.stringify({ type:'audio', data:b64 }));
+        }
+      };
+      src.connect(workletNode); workletNode.connect(audioCtxIn.destination);
+    }
+
+    async function enqueuePlayback(base64){
+      const bytes=Uint8Array.from(atob(base64), c=>c.charCodeAt(0));
+      const view=new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const len=bytes.byteLength/2, f32=new Float32Array(len);
+      for(let i=0;i<len;i++) f32[i]=view.getInt16(i*2,true)/0x8000;
+
+      playbackCtx ||= new (window.AudioContext||window.webkitAudioContext)({ sampleRate:48000 });
+      const factor=Math.round(playbackCtx.sampleRate/24000);
+      const up=new Float32Array(f32.length*factor);
+      for(let i=0;i<f32.length;i++) for(let k=0;k<factor;k++) up[i*factor+k]=f32[i];
+
+      queue.push(up); if(!playing) playFromQueue();
+    }
+    async function playFromQueue(){
+      if(playing) return; playing=true; speakUI(true);
+      const ctx = playbackCtx || (playbackCtx = new AudioContext({ sampleRate:48000 }));
+      while(queue.length){
+        const chunk=queue.shift();
+        const buf=ctx.createBuffer(1, chunk.length, ctx.sampleRate);
+        buf.copyToChannel(chunk,0);
+        const src=ctx.createBufferSource(); src.buffer=buf; src.connect(ctx.destination);
+        await new Promise(res => { src.onended=res; src.start(); });
+      }
+      playing=false; speakUI(false);
+    }
+
+    async function start(){
+      if(running) return; running=true;
+      const url=(location.protocol==='https:'?'wss://':'ws://') + location.host + '/realtime';
+      ws=new WebSocket(url);
+
+      ws.onopen = async () => {
+        setState('LIVE','live'); setLine('');
+        await initMic();
+        if (langSel.value==='auto'){
+          ws.send(JSON.stringify({ type:'text', text:
+            "Auto language: Detect my spoken language (en,hi,mr,gu,bn,ta,te) and reply in the SAME language. Switch immediately if I change."
+          }));
+          setLine('Auto language: I will match your language.');
+        } else {
+          const names={en:'English',hi:'Hindi',mr:'Marathi',gu:'Gujarati',bn:'Bengali',ta:'Tamil',te:'Telugu'};
+          ws.send(JSON.stringify({ type:'text', text:`From now on, reply ONLY in ${names[langSel.value]} (${langSel.value}).` }));
+          if (langSel.value==='hi') ws.send(JSON.stringify({ type:'text', text:"अब से हिंदी में ही जवाब दें।" }));
+          setLine('Language fixed: ' + names[langSel.value]);
+        }
+      };
+
+      ws.onmessage = (evt)=>{
+        const msg=JSON.parse(evt.data);
+        if (msg.type==='audio' && msg.data) enqueuePlayback(msg.data);
+        else if (msg.type==='text' && msg.text) setLine(msg.text);
+        else if (msg.type==='interrupted'){ queue=[]; speakUI(false); setLine('…(barge-in)'); }
+        else if (msg.type==='error'){ setLine('Error: ' + msg.error); }
+      };
+
+      ws.onclose = ()=>{
+        running=false; speakUI(false); setState('DISCONNECTED'); setLine('');
+        try{ micStream?.getTracks().forEach(t=>t.stop()); }catch{} try{ audioCtxIn?.close(); }catch{}
+      };
+    }
+
+    function stop(){
+      try{ ws?.readyState===1 && ws.send(JSON.stringify({ type:'interrupt' })); }catch{}
+      try{ ws?.close(); }catch{}
+      try{ micStream?.getTracks().forEach(t=>t.stop()); }catch{} try{ audioCtxIn?.close(); }catch{}
+      running=false; speakUI(false); setState('DISCONNECTED'); setLine('');
+    }
+
+    // events
+    startBtn.onclick = start;
+    stopBtn.onclick  = stop;
+
+    // shortcuts
+    window.addEventListener('keydown', (e)=>{
+      const k=e.key.toLowerCase();
+      if (k==='s') start();
+      if (k==='x') stop();
+    });
+
+    // live language change
+    langSel.onchange = () => {
+      if (ws?.readyState !== 1) { setLine('Language will apply on next Start.'); return; }
+      if (langSel.value === 'auto') {
+        ws.send(JSON.stringify({ type:'text', text:"Auto language: Detect my spoken language and reply in the same." }));
+        setLine('Language mode → Auto');
+      } else {
+        const names={en:'English',hi:'Hindi',mr:'Marathi',gu:'Gujarati',bn:'Bengali',ta:'Tamil',te:'Telugu'};
+        ws.send(JSON.stringify({ type:'text', text:`From now on, reply ONLY in ${names[langSel.value]} (${langSel.value}).` }));
+        if (langSel.value==='hi') ws.send(JSON.stringify({ type:'text', text:"अब से हिंदी में ही जवाब दें।" }));
+        setLine('Language → ' + names[langSel.value]);
+      }
+    };
+  </script>
+</body>
+</html>

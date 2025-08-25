@@ -1,0 +1,21 @@
+{
+  "name": "voice-chat-bot",
+  "version": "1.0.0",
+  "description": "Realtime voice chatbot using Gemini Live API",
+  "main": "server/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "nodemon server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0",
+    "@google/genai": "^0.3.0",
+    "dotenv": "^16.4.5",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
